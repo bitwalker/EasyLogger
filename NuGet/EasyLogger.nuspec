@@ -2,14 +2,14 @@
 <package >
   <metadata>
     <id>EasyLogger</id>
-    <version>1.0.0</version>
+    <version>1.1.1</version>
     <authors>Paul Schoenfelder</authors>
     <owners>Paul Schoenfelder</owners>
     <licenseUrl>http://opensource.org/licenses/MIT</licenseUrl>
     <projectUrl>http://github.com/bitwalker/EasyLogger</projectUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <description>Simple and easy logging for .NET</description>
-    <releaseNotes>Initial release.</releaseNotes>
+    <releaseNotes>Made it optional to specify the Type that Log is called from.</releaseNotes>
     <copyright>Copyright 2013</copyright>
     <tags>NLog Logging</tags>
     <dependencies>

@@ -1,9 +1,8 @@
 ﻿using System;
-using System.Diagnostics.Contracts;
-using System.IO;
 using System.Text;
 using System.Collections.Generic;
-using System.Web.Services.Protocols;
+using System.Diagnostics;
+using System.Diagnostics.Contracts;
 
 using NLog;
 
@@ -19,51 +18,66 @@ namespace EasyLogger
         Fatal
     }
 
+    public class LoggingContext
+    {
+        public Type CallingType { get; set; }
+        public string CallingMethodName { get; set; }
+
+        public LoggingContext()
+        {
+            var s = new StackTrace();
+            var frame = s.GetFrame(2);
+            if (frame != null)
+            {
+                var method = frame.GetMethod();
+                if (method != null)
+                {
+                    CallingType = method.DeclaringType;
+                    CallingMethodName = method.Name;
+                }
+                else
+                {
+                    CallingType = typeof (TypeUnavailable);
+                    CallingMethodName = "N/A";
+                }
+            }
+        }
+
+        public string FormatMessage(string message, params dynamic[] args)
+        {
+            return string.Format(string.Format("{0}: {1}", this.CallingMethodName, message), args);
+        }
+
+        public class TypeUnavailable
+        {
+        }
+    }
+
     public class Log
     {
         private static readonly object _lock = new object();
 
         public Logger Logger { get; private set; }
-        public Type LoggedType { get; private set; }
-        public bool LogToFile { get; private set; }
-        public string LogPath { get; private set; }
 
-        private Log()
+        private Log(Type loggingType)
         {
-            
+            this.Logger = LogManager.GetLogger(loggingType.Name);
         }
 
-        public static Log Initialize(Type loggingType)
+        public static Log Get()
         {
-            var log = new Log
-                      {
-                          Logger = LogManager.GetLogger(loggingType.Name),
-                          LogToFile = false
-                      };
-            return log;
+            var context = new LoggingContext();
+            return new Log(context.CallingType);
         }
 
-        public static Log Initialize(Type loggingType, string logFile)
+        public static Log Get(Type loggingType)
         {
-            Contract.Requires(logFile.NotEmpty());
+            return new Log(loggingType);
+        }
 
-            var log = new Log
-                      {
-                          Logger = LogManager.GetLogger(loggingType.Name),
-                          LoggedType = loggingType,
-                          LogToFile = true,
-                          LogPath = logFile
-                      };
-
-            // Ensure that the directory this log is being initialized against exists
-            string directory = Path.GetDirectoryName(logFile);
-            // If this is empty/null, then it's being saved in the current directory
-            if (directory.NotEmpty()) 
-                // If it doesn't exist, create it
-                if (!Directory.Exists(Path.GetDirectoryName(logFile)))
-                    Directory.CreateDirectory(Path.GetDirectoryName(logFile));
-
-            return log;
+        public static Log Get<T>()
+        {
+            return new Log(typeof(T));
         }
 
         /// <summary>
@@ -73,26 +87,19 @@ namespace EasyLogger
         {
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                WriteToFile(EventType.Trace, message);
-            else
-                Logger.Trace(message);
+            var context = new LoggingContext();
+            Logger.Trace(context.FormatMessage(message));
         }
 
         /// <summary>
         /// Log a trace message by providing a format string and arguments.
         /// </summary>
-        public void Trace(string message, params object[] args)
+        public void Trace(string message, params dynamic[] args)
         {
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                if (args == null)
-                    WriteToFile(EventType.Fatal, message);
-                else
-                    WriteToFile(EventType.Fatal, string.Format(message, args));
-            else
-                Logger.Trace(message, args);
+            var context = new LoggingContext();
+            Logger.Trace(context.FormatMessage(message, args));
         }
 
         /// <summary>
@@ -102,31 +109,8 @@ namespace EasyLogger
         {
             Contract.Requires(ex != null);
 
-            if (LogToFile)
-            {
-                var message = new StringBuilder();
-
-                if (ex.GetType() == typeof(SoapException))
-                {
-                    var soapEx = (SoapException) ex;
-                    var formatted = string.Format("Actor: {0} - Code {1} - Sub Code {2} - Detail {3}", soapEx.Actor, soapEx.Code, soapEx.SubCode, soapEx.Detail.InnerXml);
-                    message.AppendLine(formatted);
-                    message.AppendLine();
-                    message.AppendLine(ex.StackTrace);
-                }
-                else
-                {
-                    message.AppendLine(ex.GetType() + ": " + ex.Message);
-                    message.AppendLine();
-                    message.AppendLine(ex.StackTrace);
-                }
-
-                GetInnerExceptions(ex, ref message);
-
-                WriteToFile(EventType.Fatal, message.ToString());
-            }
-            else
-                Logger.TraceException("Exception occurred.", ex);
+            var context = new LoggingContext();
+            Logger.TraceException(context.FormatMessage(ex.Message), ex);
         }
 
         /// <summary>
@@ -137,47 +121,36 @@ namespace EasyLogger
             Contract.Requires(eventContextData != null);
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                WriteToFile(EventType.Trace, message);
-            else
-            {
-                var eventInfo = new LogEventInfo
-                                {
-                                    Level = LogLevel.Trace,
-                                    LoggerName = Logger.Name,
-                                    Message = message,
-                                    TimeStamp = DateTime.Now
-                                };
-                eventContextData.Do(eventInfo.Properties.Add);
-                Logger.Log(eventInfo);
-            }
+            var context = new LoggingContext();
+            var eventInfo = new LogEventInfo
+                            {
+                                Level = LogLevel.Trace,
+                                LoggerName = Logger.Name,
+                                Message = context.FormatMessage(message),
+                                TimeStamp = DateTime.Now
+                            };
+            eventContextData.Do(eventInfo.Properties.Add);
+            Logger.Log(eventInfo);
         }
 
         /// <summary>
         /// Log a trace message with a format string and arguments, and additional event context data.
         /// </summary>
-        public void Trace(IDictionary<object, object> eventContextData, string message, params object[] args)
+        public void Trace(IDictionary<object, object> eventContextData, string message, params dynamic[] args)
         {
             Contract.Requires(eventContextData != null);
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                if (args == null)
-                    WriteToFile(EventType.Trace, message);
-                else
-                    WriteToFile(EventType.Trace, string.Format(message, args));
-            else
-            {
-                var eventInfo = new LogEventInfo
-                                {
-                                    Level = LogLevel.Trace,
-                                    LoggerName = Logger.Name,
-                                    Message = args == null ? message : string.Format(message, args),
-                                    TimeStamp = DateTime.Now
-                                };
-                eventContextData.Do(eventInfo.Properties.Add);
-                Logger.Log(eventInfo);
-            }
+            var context = new LoggingContext();
+            var eventInfo = new LogEventInfo
+                            {
+                                Level = LogLevel.Trace,
+                                LoggerName = Logger.Name,
+                                Message = context.FormatMessage(message, args),
+                                TimeStamp = DateTime.Now
+                            };
+            eventContextData.Do(eventInfo.Properties.Add);
+            Logger.Log(eventInfo);
         }
 
         /// <summary>
@@ -188,42 +161,17 @@ namespace EasyLogger
             Contract.Requires(eventContextData != null);
             Contract.Requires(ex != null);
 
-            if (LogToFile)
-            {
-                var message = new StringBuilder();
-
-                if (ex.GetType() == typeof(SoapException))
-                {
-                    var soapEx = (SoapException) ex;
-                    var formatted = string.Format("Actor: {0} - Code {1} - Sub Code {2} - Detail {3}", soapEx.Actor, soapEx.Code, soapEx.SubCode, soapEx.Detail.InnerXml);
-                    message.AppendLine(formatted);
-                    message.AppendLine();
-                    message.AppendLine(ex.StackTrace);
-                }
-                else
-                {
-                    message.AppendLine(ex.GetType() + ": " + ex.Message);
-                    message.AppendLine();
-                    message.AppendLine(ex.StackTrace);
-                }
-
-                GetInnerExceptions(ex, ref message);
-
-                WriteToFile(EventType.Trace, message.ToString());
-            }
-            else
-            {
-                var eventInfo = new LogEventInfo
-                                {
-                                    Level = LogLevel.Trace,
-                                    LoggerName = Logger.Name,
-                                    Message = "Exception occurred.",
-                                    Exception = ex,
-                                    TimeStamp = DateTime.Now
-                                };
-                eventContextData.Do(eventInfo.Properties.Add);
-                Logger.Log(eventInfo);
-            }
+            var context = new LoggingContext();
+            var eventInfo = new LogEventInfo
+                            {
+                                Level = LogLevel.Trace,
+                                LoggerName = Logger.Name,
+                                Message = context.FormatMessage(ex.Message),
+                                Exception = ex,
+                                TimeStamp = DateTime.Now
+                            };
+            eventContextData.Do(eventInfo.Properties.Add);
+            Logger.Log(eventInfo);
         }
 
         /// <summary>
@@ -233,26 +181,19 @@ namespace EasyLogger
         {
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                WriteToFile(EventType.Debug, message);
-            else
-                Logger.Debug(message);
+            var context = new LoggingContext();
+            Logger.Debug(context.FormatMessage(message));
         }
 
         /// <summary>
         /// Log a debug message by providing a format string and arguments.
         /// </summary>
-        public void Debug(string message, params object[] args)
+        public void Debug(string message, params dynamic[] args)
         {
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                if (args == null)
-                    WriteToFile(EventType.Debug, message);
-                else
-                    WriteToFile(EventType.Debug, string.Format(message, args));
-            else
-                Logger.Debug(message, args);
+            var context = new LoggingContext();
+            Logger.Debug(context.FormatMessage(message), args);
         }
 
         /// <summary>
@@ -263,47 +204,37 @@ namespace EasyLogger
             Contract.Requires(eventContextData != null);
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                WriteToFile(EventType.Debug, message);
-            else
-            {
-                var eventInfo = new LogEventInfo
-                                {
-                                    Level = LogLevel.Debug,
-                                    LoggerName = Logger.Name,
-                                    Message = message,
-                                    TimeStamp = DateTime.Now
-                                };
-                eventContextData.Do(eventInfo.Properties.Add);
-                Logger.Log(eventInfo);
-            }
+            var context = new LoggingContext();
+            var eventInfo = new LogEventInfo
+                            {
+                                Level = LogLevel.Debug,
+                                LoggerName = Logger.Name,
+                                Message = context.FormatMessage(message),
+                                TimeStamp = DateTime.Now
+                            };
+            eventContextData.Do(eventInfo.Properties.Add);
+            Logger.Log(eventInfo);
         }
 
         /// <summary>
         /// Log a debug message with a format string and arguments, and additional event context data.
         /// </summary>
-        public void Debug(IDictionary<object, object> eventContextData, string message, params object[] args)
+        public void Debug(IDictionary<object, object> eventContextData, string message, params dynamic[] args)
         {
             Contract.Requires(eventContextData != null);
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                if (args == null)
-                    WriteToFile(EventType.Debug, message);
-                else
-                    WriteToFile(EventType.Debug, string.Format(message, args));
-            else
-            {
-                var eventInfo = new LogEventInfo
-                                {
-                                    Level = LogLevel.Debug,
-                                    LoggerName = Logger.Name,
-                                    Message = args == null ? message : string.Format(message, args),
-                                    TimeStamp = DateTime.Now
-                                };
-                eventContextData.Do(eventInfo.Properties.Add);
-                Logger.Log(eventInfo);
-            }
+
+            var context = new LoggingContext();
+            var eventInfo = new LogEventInfo
+                            {
+                                Level = LogLevel.Debug,
+                                LoggerName = Logger.Name,
+                                Message = context.FormatMessage(message, args),
+                                TimeStamp = DateTime.Now
+                            };
+            eventContextData.Do(eventInfo.Properties.Add);
+            Logger.Log(eventInfo);
         }
 
         /// <summary>
@@ -313,26 +244,19 @@ namespace EasyLogger
         {
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                WriteToFile(EventType.Informational, message);
-            else
-                Logger.Info(message);
+            var context = new LoggingContext();
+            Logger.Info(context.FormatMessage(message));
         }
 
         /// <summary>
         /// Log an informational message by providing a format string and arguments.
         /// </summary>
-        public void Info(string message, params object[] args)
+        public void Info(string message, params dynamic[] args)
         {
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                if (args == null)
-                    WriteToFile(EventType.Informational, message);
-                else
-                    WriteToFile(EventType.Informational, string.Format(message, args));
-            else
-                Logger.Info(message, args);
+            var context = new LoggingContext();
+            Logger.Info(context.FormatMessage(message), args);
         }
 
         /// <summary>
@@ -343,47 +267,36 @@ namespace EasyLogger
             Contract.Requires(eventContextData != null);
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                WriteToFile(EventType.Informational, message);
-            else
-            {
-                var eventInfo = new LogEventInfo
-                                {
-                                    Level = LogLevel.Info,
-                                    LoggerName = Logger.Name,
-                                    Message = message,
-                                    TimeStamp = DateTime.Now
-                                };
-                eventContextData.Do(eventInfo.Properties.Add);
-                Logger.Log(eventInfo);
-            }
+            var context = new LoggingContext();
+            var eventInfo = new LogEventInfo
+                            {
+                                Level = LogLevel.Info,
+                                LoggerName = Logger.Name,
+                                Message = context.FormatMessage(message),
+                                TimeStamp = DateTime.Now
+                            };
+            eventContextData.Do(eventInfo.Properties.Add);
+            Logger.Log(eventInfo);
         }
 
         /// <summary>
         /// Log a informational message with a format string and arguments, and additional event context data.
         /// </summary>
-        public void Info(IDictionary<object, object> eventContextData, string message, params object[] args)
+        public void Info(IDictionary<object, object> eventContextData, string message, params dynamic[] args)
         {
             Contract.Requires(eventContextData != null);
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                if (args == null)
-                    WriteToFile(EventType.Informational, message);
-                else
-                    WriteToFile(EventType.Informational, string.Format(message, args));
-            else
-            {
-                var eventInfo = new LogEventInfo
-                                {
-                                    Level = LogLevel.Info,
-                                    LoggerName = Logger.Name,
-                                    Message = args == null ? message : string.Format(message, args),
-                                    TimeStamp = DateTime.Now
-                                };
-                eventContextData.Do(eventInfo.Properties.Add);
-                Logger.Log(eventInfo);
-            }
+            var context = new LoggingContext();
+            var eventInfo = new LogEventInfo
+                            {
+                                Level = LogLevel.Info,
+                                LoggerName = Logger.Name,
+                                Message = context.FormatMessage(message, args),
+                                TimeStamp = DateTime.Now
+                            };
+            eventContextData.Do(eventInfo.Properties.Add);
+            Logger.Log(eventInfo);
         }
 
         /// <summary>
@@ -393,26 +306,19 @@ namespace EasyLogger
         {
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                WriteToFile(EventType.Warning, message);
-            else
-                Logger.Warn(message);
+            var context = new LoggingContext();
+            Logger.Warn(context.FormatMessage(message));
         }
 
         /// <summary>
         /// Log a warning message by providing a format string and arguments.
         /// </summary>
-        public void Warning(string message, params object[] args)
+        public void Warning(string message, params dynamic[] args)
         {
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                if (args == null)
-                    WriteToFile(EventType.Warning, message);
-                else
-                    WriteToFile(EventType.Warning, string.Format(message, args));
-            else
-                Logger.Warn(message, args);
+            var context = new LoggingContext();
+            Logger.Warn(context.FormatMessage(message, args));
         }
 
         /// <summary>
@@ -423,47 +329,36 @@ namespace EasyLogger
             Contract.Requires(eventContextData != null);
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                WriteToFile(EventType.Warning, message);
-            else
-            {
-                var eventInfo = new LogEventInfo
-                                {
-                                    Level = LogLevel.Warn,
-                                    LoggerName = Logger.Name,
-                                    Message = message,
-                                    TimeStamp = DateTime.Now
-                                };
-                eventContextData.Do(eventInfo.Properties.Add);
-                Logger.Log(eventInfo);
-            }
+            var context = new LoggingContext();
+            var eventInfo = new LogEventInfo
+                            {
+                                Level = LogLevel.Warn,
+                                LoggerName = Logger.Name,
+                                Message = context.FormatMessage(message),
+                                TimeStamp = DateTime.Now
+                            };
+            eventContextData.Do(eventInfo.Properties.Add);
+            Logger.Log(eventInfo);
         }
 
         /// <summary>
         /// Log a warning error message with a format string and arguments, and additional event context data.
         /// </summary>
-        public void Warning(IDictionary<object, object> eventContextData, string message, params object[] args)
+        public void Warning(IDictionary<object, object> eventContextData, string message, params dynamic[] args)
         {
             Contract.Requires(eventContextData != null);
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                if (args == null)
-                    WriteToFile(EventType.Warning, message);
-                else
-                    WriteToFile(EventType.Warning, string.Format(message, args));
-            else
-            {
-                var eventInfo = new LogEventInfo
-                                {
-                                    Level = LogLevel.Warn,
-                                    LoggerName = Logger.Name,
-                                    Message = args == null ? message : string.Format(message, args),
-                                    TimeStamp = DateTime.Now
-                                };
-                eventContextData.Do(eventInfo.Properties.Add);
-                Logger.Log(eventInfo);
-            }
+            var context = new LoggingContext();
+            var eventInfo = new LogEventInfo
+                            {
+                                Level = LogLevel.Warn,
+                                LoggerName = Logger.Name,
+                                Message = context.FormatMessage(message, args),
+                                TimeStamp = DateTime.Now
+                            };
+            eventContextData.Do(eventInfo.Properties.Add);
+            Logger.Log(eventInfo);
         }
 
         /// <summary>
@@ -473,26 +368,19 @@ namespace EasyLogger
         {
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                WriteToFile(EventType.Error, message);
-            else
-                Logger.Error(message);
+            var context = new LoggingContext();
+            Logger.Error(context.FormatMessage(message));
         }
 
         /// <summary>
         /// Log an error message by providing a format string and arguments.
         /// </summary>
-        public void Error(string message, params object[] args)
+        public void Error(string message, params dynamic[] args)
         {
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                if (args == null)
-                    WriteToFile(EventType.Error, message);
-                else
-                    WriteToFile(EventType.Error, string.Format(message, args));
-            else
-                Logger.Error(message, args);
+            var context = new LoggingContext();
+            Logger.Error(context.FormatMessage(message, args));
         }
 
         /// <summary>
@@ -502,31 +390,8 @@ namespace EasyLogger
         {
             Contract.Requires(ex != null);
 
-            if (LogToFile)
-            {
-                var message = new StringBuilder();
-
-                if (ex.GetType() == typeof (SoapException))
-                {
-                    var soapEx = (SoapException) ex;
-                    var formatted = string.Format("Actor: {0} - Code {1} - Sub Code {2} - Detail {3}", soapEx.Actor, soapEx.Code, soapEx.SubCode, soapEx.Detail.InnerXml);
-                    message.AppendLine(formatted);
-                    message.AppendLine();
-                    message.AppendLine(ex.StackTrace);
-                }
-                else
-                {
-                    message.AppendLine(ex.GetType() + ": " + ex.Message);
-                    message.AppendLine();
-                    message.AppendLine(ex.StackTrace);
-                }
-
-                GetInnerExceptions(ex, ref message);
-
-                WriteToFile(EventType.Error, message.ToString());
-            }
-            else
-                Logger.ErrorException("Exception occurred.", ex);
+            var context = new LoggingContext();
+            Logger.ErrorException(context.FormatMessage(ex.Message), ex);
         }
 
         /// <summary>
@@ -537,47 +402,36 @@ namespace EasyLogger
             Contract.Requires(eventContextData != null);
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                WriteToFile(EventType.Error, message);
-            else
-            {
-                var eventInfo = new LogEventInfo
-                                {
-                                    Level = LogLevel.Error,
-                                    LoggerName = Logger.Name,
-                                    Message = message,
-                                    TimeStamp = DateTime.Now
-                                };
-                eventContextData.Do(eventInfo.Properties.Add);
-                Logger.Log(eventInfo);
-            }
+            var context = new LoggingContext();
+            var eventInfo = new LogEventInfo
+                            {
+                                Level = LogLevel.Error,
+                                LoggerName = Logger.Name,
+                                Message = context.FormatMessage(message),
+                                TimeStamp = DateTime.Now
+                            };
+            eventContextData.Do(eventInfo.Properties.Add);
+            Logger.Log(eventInfo);
         }
 
         /// <summary>
         /// Log an error message with a format string and arguments, and additional event context data.
         /// </summary>
-        public void Error(IDictionary<object, object> eventContextData, string message, params object[] args)
+        public void Error(IDictionary<object, object> eventContextData, string message, params dynamic[] args)
         {
             Contract.Requires(eventContextData != null);
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                if (args == null)
-                    WriteToFile(EventType.Error, message);
-                else
-                    WriteToFile(EventType.Error, string.Format(message, args));
-            else
-            {
-                var eventInfo = new LogEventInfo
-                                {
-                                    Level = LogLevel.Error,
-                                    LoggerName = Logger.Name,
-                                    Message = args == null ? message : string.Format(message, args),
-                                    TimeStamp = DateTime.Now
-                                };
-                eventContextData.Do(eventInfo.Properties.Add);
-                Logger.Log(eventInfo);
-            }
+            var context = new LoggingContext();
+            var eventInfo = new LogEventInfo
+                            {
+                                Level = LogLevel.Error,
+                                LoggerName = Logger.Name,
+                                Message = context.FormatMessage(message, args),
+                                TimeStamp = DateTime.Now
+                            };
+            eventContextData.Do(eventInfo.Properties.Add);
+            Logger.Log(eventInfo);
         }
 
         /// <summary>
@@ -588,42 +442,17 @@ namespace EasyLogger
             Contract.Requires(eventContextData != null);
             Contract.Requires(ex != null);
 
-            if (LogToFile)
-            {
-                var message = new StringBuilder();
-
-                if (ex.GetType() == typeof(SoapException))
-                {
-                    var soapEx = (SoapException) ex;
-                    var formatted = string.Format("Actor: {0} - Code {1} - Sub Code {2} - Detail {3}", soapEx.Actor, soapEx.Code, soapEx.SubCode, soapEx.Detail.InnerXml);
-                    message.AppendLine(formatted);
-                    message.AppendLine();
-                    message.AppendLine(ex.StackTrace);
-                }
-                else
-                {
-                    message.AppendLine(ex.GetType() + ": " + ex.Message);
-                    message.AppendLine();
-                    message.AppendLine(ex.StackTrace);
-                }
-
-                GetInnerExceptions(ex, ref message);
-
-                WriteToFile(EventType.Error, message.ToString());
-            }
-            else
-            {
-                var eventInfo = new LogEventInfo
-                                {
-                                    Level = LogLevel.Error,
-                                    LoggerName = Logger.Name,
-                                    Message = "Exception occurred.",
-                                    Exception = ex,
-                                    TimeStamp = DateTime.Now
-                                };
-                eventContextData.Do(eventInfo.Properties.Add);
-                Logger.Log(eventInfo);
-            }
+            var context = new LoggingContext();
+            var eventInfo = new LogEventInfo
+                            {
+                                Level = LogLevel.Error,
+                                LoggerName = Logger.Name,
+                                Message = context.FormatMessage(ex.Message),
+                                Exception = ex,
+                                TimeStamp = DateTime.Now
+                            };
+            eventContextData.Do(eventInfo.Properties.Add);
+            Logger.Log(eventInfo);
         }
 
         /// <summary>
@@ -633,26 +462,19 @@ namespace EasyLogger
         {
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                WriteToFile(EventType.Fatal, message);
-            else
-                Logger.Fatal(message);
+            var context = new LoggingContext();
+            Logger.Fatal(context.FormatMessage(message));
         }
 
         /// <summary>
         /// Log a fatal error message with provided format string and arguments.
         /// </summary>
-        public void Fatal(string message, params object[] args)
+        public void Fatal(string message, params dynamic[] args)
         {
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                if (args == null)
-                    WriteToFile(EventType.Fatal, message);
-                else
-                    WriteToFile(EventType.Fatal, string.Format(message, args));
-            else
-                Logger.Fatal(message, args);
+            var context = new LoggingContext();
+            Logger.Fatal(context.FormatMessage(message, args));
         }
 
         /// <summary>
@@ -662,31 +484,8 @@ namespace EasyLogger
         {
             Contract.Requires(ex != null);
 
-            if (LogToFile)
-            {
-                var message = new StringBuilder();
-
-                if (ex.GetType() == typeof(SoapException))
-                {
-                    var soapEx = (SoapException) ex;
-                    var formatted = string.Format("Actor: {0} - Code {1} - Sub Code {2} - Detail {3}", soapEx.Actor, soapEx.Code, soapEx.SubCode, soapEx.Detail.InnerXml);
-                    message.AppendLine(formatted);
-                    message.AppendLine();
-                    message.AppendLine(ex.StackTrace);
-                }
-                else
-                {
-                    message.AppendLine(ex.GetType() + ": " + ex.Message);
-                    message.AppendLine();
-                    message.AppendLine(ex.StackTrace);
-                }
-
-                GetInnerExceptions(ex, ref message);
-
-                WriteToFile(EventType.Fatal, message.ToString());
-            }
-            else
-                Logger.FatalException("Exception occurred.", ex);
+            var context = new LoggingContext();
+            Logger.FatalException(context.FormatMessage(ex.Message), ex);
         }
 
         /// <summary>
@@ -697,47 +496,36 @@ namespace EasyLogger
             Contract.Requires(eventContextData != null);
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                WriteToFile(EventType.Fatal, message);
-            else
-            {
-                var eventInfo = new LogEventInfo
-                                {
-                                    Level = LogLevel.Fatal,
-                                    LoggerName = Logger.Name,
-                                    Message = message,
-                                    TimeStamp = DateTime.Now
-                                };
-                eventContextData.Do(eventInfo.Properties.Add);
-                Logger.Log(eventInfo);
-            }
+            var context = new LoggingContext();
+            var eventInfo = new LogEventInfo
+                            {
+                                Level = LogLevel.Fatal,
+                                LoggerName = Logger.Name,
+                                Message = context.FormatMessage(message),
+                                TimeStamp = DateTime.Now
+                            };
+            eventContextData.Do(eventInfo.Properties.Add);
+            Logger.Log(eventInfo);
         }
 
         /// <summary>
         /// Log a fatal error message with a format string and arguments, and additional event context data.
         /// </summary>
-        public void Fatal(IDictionary<object, object> eventContextData, string message, params object[] args)
+        public void Fatal(IDictionary<object, object> eventContextData, string message, params dynamic[] args)
         {
             Contract.Requires(eventContextData != null);
             Contract.Requires(message.NotEmpty());
 
-            if (LogToFile)
-                if (args == null)
-                    WriteToFile(EventType.Fatal, message);
-                else
-                    WriteToFile(EventType.Fatal, string.Format(message, args));
-            else
-            {
-                var eventInfo = new LogEventInfo
-                                {
-                                    Level = LogLevel.Fatal,
-                                    LoggerName = Logger.Name,
-                                    Message = args == null ? message : string.Format(message, args),
-                                    TimeStamp = DateTime.Now
-                                };
-                eventContextData.Do(eventInfo.Properties.Add);
-                Logger.Log(eventInfo);
-            }
+            var context = new LoggingContext();
+            var eventInfo = new LogEventInfo
+                            {
+                                Level = LogLevel.Fatal,
+                                LoggerName = Logger.Name,
+                                Message = context.FormatMessage(message, args),
+                                TimeStamp = DateTime.Now
+                            };
+            eventContextData.Do(eventInfo.Properties.Add);
+            Logger.Log(eventInfo);
         }
 
         /// <summary>
@@ -748,42 +536,17 @@ namespace EasyLogger
             Contract.Requires(eventContextData != null);
             Contract.Requires(ex != null);
 
-            if (LogToFile)
-            {
-                var message = new StringBuilder();
-
-                if (ex.GetType() == typeof(SoapException))
-                {
-                    var soapEx = (SoapException) ex;
-                    var formatted = string.Format("Actor: {0} - Code {1} - Sub Code {2} - Detail {3}", soapEx.Actor, soapEx.Code, soapEx.SubCode, soapEx.Detail.InnerXml);
-                    message.AppendLine(formatted);
-                    message.AppendLine();
-                    message.AppendLine(ex.StackTrace);
-                }
-                else
-                {
-                    message.AppendLine(ex.GetType() + ": " + ex.Message);
-                    message.AppendLine();
-                    message.AppendLine(ex.StackTrace);
-                }
-
-                GetInnerExceptions(ex, ref message);
-
-                WriteToFile(EventType.Fatal, message.ToString());
-            }
-            else
-            {
-                var eventInfo = new LogEventInfo
-                                {
-                                    Level = LogLevel.Fatal,
-                                    LoggerName = Logger.Name,
-                                    Message = "Exception occurred.",
-                                    Exception = ex,
-                                    TimeStamp = DateTime.Now
-                                };
-                eventContextData.Do(eventInfo.Properties.Add);
-                Logger.Log(eventInfo);
-            }
+            var context = new LoggingContext();
+            var eventInfo = new LogEventInfo
+                            {
+                                Level = LogLevel.Fatal,
+                                LoggerName = Logger.Name,
+                                Message = context.FormatMessage(ex.Message),
+                                Exception = ex,
+                                TimeStamp = DateTime.Now
+                            };
+            eventContextData.Do(eventInfo.Properties.Add);
+            Logger.Log(eventInfo);
         }
 
         /// <summary>
@@ -810,25 +573,6 @@ namespace EasyLogger
             else
             {
                 return;
-            }
-        }
-
-        /// <summary>
-        /// Writes an entry to a provided file
-        /// </summary>
-        private void WriteToFile(EventType type, string message)
-        {
-            Contract.Requires(message.NotEmpty());
-
-            lock (_lock)
-            {
-                string trace_message = string.Format("{0, 19}:    {1, -13} - {2, -15} - {3}",
-                                                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
-                                                    Enum.GetName(typeof(EventType), type),
-                                                    LoggedType.Name,
-                                                    message);
-
-                File.AppendAllText(LogPath, trace_message, Encoding.UTF8);
             }
         }
     }
