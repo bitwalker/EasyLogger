@@ -45,7 +45,10 @@ namespace EasyLogger
 
         public string FormatMessage(string message, params dynamic[] args)
         {
-            return string.Format(string.Format("{0}: {1}", this.CallingMethodName, message), args);
+            if (args != null && args.Length > 0)
+                return string.Format(string.Format("{0}: {1}", this.CallingMethodName, message), args);
+            else
+                return string.Format("{0}: {1}", this.CallingMethodName, message);
         }
 
         public class TypeUnavailable
