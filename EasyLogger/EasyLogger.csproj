@@ -60,6 +60,18 @@
     <None Include="packages.config" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <PropertyGroup>
+    <PostBuildEvent>copy /Y "$(TargetDir)EasyLogger.dll" "$(SolutionDir)NuGet\lib"
+copy /Y "$(TargetDir)NLog.config" "$(SolutionDir)NuGet\content"
+copy /Y "$(TargetDir)NLog.xsd" "$(SolutionDir)NuGet\content"
+
+
+"$(SolutionDir)\Tools\NuGet.exe" pack "$(SolutionDir)NuGet\EasyLogger.nuspec"
+
+move /Y "$(TargetDir)*.nupkg" "$(SolutionDir)NuGet"
+
+rename "$(SolutionDir)NuGet\*.nupkg" "*.nupkg.zip"</PostBuildEvent>
+  </PropertyGroup>
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
        Other similar extension points exist, see Microsoft.Common.targets.
   <Target Name="BeforeBuild">
